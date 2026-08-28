@@ -523,7 +523,7 @@ export default function App() {
       hasAutoLoaded.current = true;
       loadFromSheet();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    
   }, [sheetUrl]);
 
   const showToast = (msg, tone = "blue") => {
@@ -617,7 +617,7 @@ export default function App() {
     if (pushTimer.current) clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(() => { pushToSheet(); }, 1200);
     return () => clearTimeout(pushTimer.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    
   }, [products, transactions, categories, sheetUrl]);
 
   const nav = [
