@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
+import { BrowserMultiFormatReader } from "@zxing/browser";
 import {
   LayoutDashboard, Package, PackagePlus, ShoppingCart, BarChart3, History,
   Menu, X, Plus, Trash2, Pencil, Search, Bell, ChevronDown, Download,
@@ -343,59 +344,44 @@ function BarcodeLabelModal({ product, onClose }) {
    what a USB/Bluetooth barcode-gun needs, since those just "type" the code. */
 function ScannerModal({ open, onClose, onDetect, title = "สแกนบาร์โค้ด" }) {
   const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  const timerRef = useRef(null);
-  const [supported, setSupported] = useState(typeof window !== "undefined" && "BarcodeDetector" in window);
+  const controlsRef = useRef(null);
   const [camError, setCamError] = useState("");
   const [manual, setManual] = useState("");
 
   useEffect(() => {
     if (!open) return;
     setCamError("");
-    if (!supported) return;
     let cancelled = false;
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
-        streamRef.current = stream;
-        if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
-        const detector = new window.BarcodeDetector({ formats: ["code_128", "ean_13", "ean_8", "upc_a", "upc_e", "code_39", "qr_code"] });
-        timerRef.current = setInterval(async () => {
-          if (!videoRef.current || videoRef.current.readyState < 2) return;
-          try {
-            const codes = await detector.detect(videoRef.current);
-            if (codes && codes.length > 0) {
-              onDetect(codes[0].rawValue);
-            }
-          } catch (e) { /* transient decode miss — try again next tick */ }
-        }, 350);
+        const codeReader = new BrowserMultiFormatReader();
+        const devices = await BrowserMultiFormatReader.listVideoInputDevices();
+        if (!devices.length) throw new Error("no-camera");
+        // prefer the rear/back camera on phones & tablets — front camera is a poor default for scanning
+        const rear = devices.find((d) => /back|rear|environment/i.test(d.label)) || devices[devices.length - 1];
+        const controls = await codeReader.decodeFromVideoDevice(rear.deviceId, videoRef.current, (result) => {
+          if (!cancelled && result) onDetect(result.getText());
+        });
+        if (cancelled) { controls.stop(); return; }
+        controlsRef.current = controls;
       } catch (e) {
-        setCamError("เปิดกล้องไม่ได้ (อาจไม่ได้รับอนุญาต) — ใช้ช่องกรอกด้านล่างแทนได้");
+        if (!cancelled) setCamError("เปิดกล้องไม่ได้ (อาจไม่ได้รับอนุญาต หรือไม่พบกล้อง — ต้องเปิดผ่าน https เท่านั้น) ใช้ช่องกรอกด้านล่างแทนได้");
       }
     })();
     return () => {
       cancelled = true;
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+      if (controlsRef.current) { controlsRef.current.stop(); controlsRef.current = null; }
     };
-  }, [open, supported]);
+  }, [open]);
 
   if (!open) return null;
 
   return (
     <Modal open={open} onClose={onClose} title={title} width={420}>
-      {supported ? (
-        <div style={{ borderRadius: 14, overflow: "hidden", background: C.ink, position: "relative", aspectRatio: "4/3" }}>
-          <video ref={videoRef} muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-          <div style={{ position: "absolute", inset: 18, border: `2px solid ${C.sky}`, borderRadius: 12, pointerEvents: "none" }} />
-        </div>
-      ) : (
-        <div style={{ background: C.amberBg, color: C.amber, borderRadius: 12, padding: "12px 14px", fontSize: 13, display: "flex", gap: 8 }}>
-          <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-          เบราว์เซอร์นี้ไม่รองรับการสแกนด้วยกล้อง (รองรับดีบน Chrome/Android) — พิมพ์หรือยิงบาร์โค้ดด้วยเครื่องสแกนที่ช่องด้านล่างแทนได้เลย
-        </div>
-      )}
+      <div style={{ borderRadius: 14, overflow: "hidden", background: C.ink, position: "relative", aspectRatio: "4/3" }}>
+        <video ref={videoRef} muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <div style={{ position: "absolute", inset: 18, border: `2px solid ${C.sky}`, borderRadius: 12, pointerEvents: "none" }} />
+      </div>
       {camError && <div style={{ marginTop: 10, fontSize: 12.5, color: C.red }}>{camError}</div>}
 
       <div style={{ marginTop: 14 }}>
@@ -523,7 +509,7 @@ export default function App() {
       hasAutoLoaded.current = true;
       loadFromSheet();
     }
-    
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetUrl]);
 
   const showToast = (msg, tone = "blue") => {
@@ -617,7 +603,7 @@ export default function App() {
     if (pushTimer.current) clearTimeout(pushTimer.current);
     pushTimer.current = setTimeout(() => { pushToSheet(); }, 1200);
     return () => clearTimeout(pushTimer.current);
-    
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products, transactions, categories, sheetUrl]);
 
   const nav = [
