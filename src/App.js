@@ -518,7 +518,7 @@ export default function App() {
       hasAutoLoaded.current = true;
       loadFromSheet();
     }
-   
+    
   }, [sheetUrl]);
 
   const showToast = (msg, tone = "blue") => {
