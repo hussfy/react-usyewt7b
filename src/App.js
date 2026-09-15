@@ -495,6 +495,15 @@ export default function App() {
   const skipNextPush = useRef(false);
   const pushTimer = useRef(null);
   const hasAutoLoaded = useRef(false);
+  // CRITICAL: nothing may auto-push to Sheets until the very first load for this
+  // URL has actually succeeded — otherwise a freshly-opened device (still holding
+  // its own default/local data) can race the load and overwrite the shared Sheet
+  // with stale data before it ever sees what's really there.
+  const [initialSyncDone, setInitialSyncDone] = useState(!sheetUrl);
+
+  useEffect(() => {
+    setInitialSyncDone(!sheetUrl);
+  }, [sheetUrl]);
 
   useEffect(() => {
     try {
@@ -509,7 +518,7 @@ export default function App() {
       hasAutoLoaded.current = true;
       loadFromSheet();
     }
-    
+   
   }, [sheetUrl]);
 
   const showToast = (msg, tone = "blue") => {
@@ -566,6 +575,7 @@ export default function App() {
     setTransactions((data.transactions || []).map(normalizeLoadedTx));
     setSyncState("ok");
     setLastSynced(new Date());
+    setInitialSyncDone(true); // only now is it safe to let this device auto-push
     showToast("โหลดข้อมูลจาก Google Sheets สำเร็จ 📥");
   };
 
@@ -596,15 +606,35 @@ export default function App() {
     }
   };
 
-  // Debounced auto-push: whenever data changes (and it wasn't a load we just applied), sync out
+  // Debounced auto-push: whenever data changes (and it wasn't a load we just applied,
+  // and the first load for this URL has actually finished), sync out
   useEffect(() => {
     if (!sheetUrl) return;
+    if (!initialSyncDone) return; // block until the initial load has proven what's really on the Sheet
     if (skipNextPush.current) { skipNextPush.current = false; return; }
     if (pushTimer.current) clearTimeout(pushTimer.current);
-    pushTimer.current = setTimeout(() => { pushToSheet(); }, 1200);
+    pushTimer.current = setTimeout(() => { pushToSheet(); }, 600);
     return () => clearTimeout(pushTimer.current);
     
-  }, [products, transactions, categories, sheetUrl]);
+  }, [products, transactions, categories, sheetUrl, initialSyncDone]);
+
+  // Best-effort flush if the tab/app is closed while a push is still pending
+  useEffect(() => {
+    const handler = () => {
+      if (pushTimer.current && sheetUrl && initialSyncDone) {
+        try {
+          const blob = new Blob([JSON.stringify({ products, transactions, categories })], { type: "text/plain" });
+          navigator.sendBeacon(sheetUrl, blob);
+        } catch (e) { /* best effort only */ }
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    window.addEventListener("pagehide", handler);
+    return () => {
+      window.removeEventListener("beforeunload", handler);
+      window.removeEventListener("pagehide", handler);
+    };
+  }, [products, transactions, categories, sheetUrl, initialSyncDone]);
 
   const nav = [
     { key: "dashboard", label: "แดชบอร์ด", icon: LayoutDashboard },
@@ -712,12 +742,18 @@ export default function App() {
         </header>
 
         <main style={{ padding: 20, maxWidth: 1280, margin: "0 auto" }}>
-          {page === "dashboard" && <Dashboard products={products} transactions={transactions} />}
-          {page === "inventory" && <Inventory products={products} setProducts={setProducts} categories={categories} setCategories={setCategories} showToast={showToast} />}
-          {page === "stockin" && <StockIn products={products} setProducts={setProducts} setTransactions={setTransactions} showToast={showToast} />}
-          {page === "sales" && <SalesOrder products={products} setProducts={setProducts} setTransactions={setTransactions} showToast={showToast} lineLog={lineLog} setLineLog={setLineLog} />}
-          {page === "report" && <MonthlyReport products={products} transactions={transactions} />}
-          {page === "history" && <TransactionHistory transactions={transactions} />}
+          {sheetUrl && !initialSyncDone ? (
+            <SyncGateScreen syncState={syncState} lastError={lastError} onRetry={loadFromSheet} onUseLocal={() => setInitialSyncDone(true)} />
+          ) : (
+            <>
+              {page === "dashboard" && <Dashboard products={products} transactions={transactions} />}
+              {page === "inventory" && <Inventory products={products} setProducts={setProducts} categories={categories} setCategories={setCategories} showToast={showToast} />}
+              {page === "stockin" && <StockIn products={products} setProducts={setProducts} setTransactions={setTransactions} showToast={showToast} />}
+              {page === "sales" && <SalesOrder products={products} setProducts={setProducts} setTransactions={setTransactions} showToast={showToast} lineLog={lineLog} setLineLog={setLineLog} />}
+              {page === "report" && <MonthlyReport products={products} transactions={transactions} />}
+              {page === "history" && <TransactionHistory transactions={transactions} />}
+            </>
+          )}
         </main>
       </div>
 
@@ -766,6 +802,31 @@ export default function App() {
 /* ---------------------------------------------------------
    DASHBOARD
 --------------------------------------------------------- */
+function SyncGateScreen({ syncState, lastError, onRetry, onUseLocal }) {
+  const failed = syncState === "error";
+  return (
+    <Card style={{ padding: 32, maxWidth: 460, margin: "40px auto", textAlign: "center" }}>
+      {!failed ? (
+        <>
+          <div style={{ fontSize: 34, marginBottom: 10 }}>📥</div>
+          <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>กำลังโหลดข้อมูลล่าสุดจาก Google Sheets...</div>
+          <div style={{ fontSize: 13, color: C.slate, lineHeight: 1.6 }}>ระบบกันไม่ให้แก้ไขข้อมูลตอนนี้ เพื่อป้องกันไม่ให้ข้อมูลเครื่องนี้ไปทับของจริงใน Sheet ก่อนที่จะรู้ว่าข้างในมีอะไรอยู่จริงๆ</div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 34, marginBottom: 10 }}>⚠️</div>
+          <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6, color: C.red }}>เชื่อมต่อ Google Sheets ไม่สำเร็จ</div>
+          <div style={{ fontSize: 13, color: C.slate, lineHeight: 1.6, marginBottom: 16 }}>{lastError || "ไม่ทราบสาเหตุ"}</div>
+          <div style={{ display: "flex", gap: 8, flexDirection: "column" }}>
+            <Btn onClick={onRetry}><RefreshCw size={15} /> ลองโหลดอีกครั้ง</Btn>
+            <Btn variant="ghost" onClick={onUseLocal}>ใช้ข้อมูลในเครื่องนี้ไปก่อน (ไม่แนะนำถ้ามีเครื่องอื่นใช้ Sheets เดียวกันอยู่)</Btn>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 function Dashboard({ products, transactions }) {
   const now = new Date();
   const thisMonthTx = transactions.filter((t) => {
